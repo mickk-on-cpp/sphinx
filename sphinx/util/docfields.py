@@ -85,11 +85,10 @@ class Field(object):
 class GroupedField(Field):
     """
     A doc field that is grouped; i.e., all fields of that type will be
-    transformed into one field with its body being a bulleted list.  It always
-    has an argument.  The argument can be linked using the given *rolename*.
-    GroupedField should be used for doc fields that can occur more than once.
-    If *can_collapse* is true, this field will revert to a Field if only used
-    once.
+    transformed into one field with its body being a bulleted list.  It can have
+    an argument or not.  The argument can be linked using the given *rolename*.
+    GroupedField should be used for doc fields that can occur more than once. If
+    *can_collapse* is true, this field will revert to a Field if only used once.
 
     Example::
 
@@ -99,8 +98,8 @@ class GroupedField(Field):
     list_type = nodes.bullet_list
 
     def __init__(self, name, names=(), label=None, rolename=None,
-                 can_collapse=False):
-        Field.__init__(self, name, names, label, True, rolename)
+                 can_collapse=False, has_arg=True):
+        Field.__init__(self, name, names, label, has_arg, rolename)
         self.can_collapse = can_collapse
 
     def make_field(self, types, domain, items):
@@ -108,9 +107,10 @@ class GroupedField(Field):
         listnode = self.list_type()
         for fieldarg, content in items:
             par = nodes.paragraph()
-            par += self.make_xref(self.rolename, domain, fieldarg,
-                                  addnodes.literal_strong)
-            par += nodes.Text(' -- ')
+            if fieldarg:
+                par += self.make_xref(self.rolename, domain, fieldarg,
+                                    addnodes.literal_strong)
+                par += nodes.Text(' -- ')
             par += content
             listnode += nodes.list_item('', par)
         if len(items) == 1 and self.can_collapse:
