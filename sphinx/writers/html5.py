@@ -385,12 +385,17 @@ class HTML5Translator(BaseTranslator):
         else:
             opts = {}
 
-        highlighted = self.highlighter.highlight_block(
+        highlighted, lexer = self.highlighter.lex_and_highlight_block(
             node.rawsource, lang, opts=opts, linenos=linenos,
             location=(self.builder.current_docname, node.line), **highlight_args
         )
-        starttag = self.starttag(node, 'div', suffix='',
-                                 CLASS='highlight-%s notranslate' % lang)
+
+        attrs = {'CLASS': 'highlight-container highlight-%s notranslate' % lang}
+        from sphinx.highlighting import lexers
+        if lexer.name != lexers['none'].name:
+            attrs['data-highlight-language'] = lexer.name
+        starttag = self.starttag(node, 'div', suffix='', **attrs)
+
         self.body.append(starttag + highlighted + '</div>\n')
         raise nodes.SkipNode
 

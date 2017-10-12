@@ -29,7 +29,7 @@ from sphinx.util.texescape import tex_hl_escape_map_new
 
 if False:
     # For type annotation
-    from typing import Any, Dict  # NOQA
+    from typing import Any, Dict, Tuple  # NOQA
     from pygments.formatter import Formatter  # NOQA
 
 
@@ -103,8 +103,9 @@ class PygmentsBridge(object):
             return '\\begin{Verbatim}[commandchars=\\\\\\{\\}]\n' + \
                    source + '\\end{Verbatim}\n'
 
-    def highlight_block(self, source, lang, opts=None, location=None, force=False, **kwargs):
-        # type: (unicode, unicode, Any, Any, bool, Any) -> unicode
+    def lex_and_highlight_block(self, source, lang, opts=None, location=None, force=False,
+                                **kwargs):
+        # type: (unicode, unicode, Any, Any, bool, Any) -> Tuple[unicode, Lexer]
         if not isinstance(source, text_type):
             source = source.decode()
 
@@ -159,11 +160,17 @@ class PygmentsBridge(object):
                                location=location)
             hlsource = highlight(source, lexers['none'], formatter)
         if self.dest == 'html':
-            return hlsource
+            return hlsource, lexer
         else:
             if not isinstance(hlsource, text_type):  # Py2 / Pygments < 1.6
                 hlsource = hlsource.decode()
-            return hlsource.translate(tex_hl_escape_map_new)
+            return hlsource.translate(tex_hl_escape_map_new), lexer
+
+    def highlight_block(self, source, lang, opts=None, location=None, force=False, **kwargs):
+        # type: (unicode, unicode, Any, Any, bool, Any) -> unicode
+        res, _ = self.lex_and_highlight_block(source, lang, opts=opts, location=location,
+                                              force=force, **kwargs)
+        return res
 
     def get_stylesheet(self):
         # type: () -> unicode
