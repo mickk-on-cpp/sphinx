@@ -32,7 +32,7 @@ from sphinx.util.nodes import make_refnode
 
 if False:
     # For type annotation
-    from typing import Any, Callable, Dict, Iterator, List, Match, Pattern, Tuple, Union  # NOQA
+    from typing import Any, Callable, Dict, Iterator, List, Match, Pattern, Tuple, Union, Optional  # NOQA
     from sphinx.application import Sphinx  # NOQA
     from sphinx.builders import Builder  # NOQA
     from sphinx.config import Config  # NOQA
@@ -4668,6 +4668,20 @@ class DefinitionParser:
             self.pos += 1
         return self.definition[startPos:self.pos]
 
+    def _parse_identifier(self):
+        # type: () -> Optional[ASTIdentifier]
+        if not self.match(_identifier_re):
+            return None
+        return ASTIdentifier(self.matched_text)
+
+    def _parse_non_kw_identifier(self, error_context):
+        # type: (str) -> Optional[ASTIdentifier]
+        raw = self._parse_identifier()
+        if raw and raw.identifier in _keywords:
+            self.fail("Expected identifier in %s, " "got keyword: %s"
+                      % (error_context, raw.identifier))
+        return raw
+
     def _parse_balanced_token_seq(self, end):
         # type: (List[str]) -> str
         # TODO: add handling of string literals and similar
@@ -5107,9 +5121,9 @@ class DefinitionParser:
             if self.skip_string_and_ws('...'):
                 if not self.skip_string_and_ws('('):
                     self.fail("Expecting '(' after 'sizeof...'.")
-                if not self.match(_identifier_re):
+                ident = self._parse_identifier()
+                if not ident:
                     self.fail("Expecting identifier for 'sizeof...'.")
-                ident = ASTIdentifier(self.matched_text)
                 self.skip_ws()
                 if not self.skip_string(")"):
                     self.fail("Expecting ')' to end 'sizeof...'.")
@@ -5358,9 +5372,9 @@ class DefinitionParser:
         # user-defined literal?
         if self.skip_string('""'):
             self.skip_ws()
-            if not self.match(_identifier_re):
+            identifier = self._parse_identifier()
+            if not identifier:
                 self.fail("Expected user-defined literal suffix.")
-            identifier = ASTIdentifier(self.matched_text)
             return ASTOperatorLiteral(identifier)
 
         # oh well, looks like a cast operator definition.
@@ -5436,17 +5450,12 @@ class DefinitionParser:
             if self.skip_word_and_ws('operator'):
                 identOrOp = self._parse_operator()
             else:
-                if not self.match(_identifier_re):
+                identOrOp = self._parse_non_kw_identifier('nested name')
+                if not identOrOp:
                     if memberPointer and len(names) > 0:
                         templates.pop()
                         break
                     self.fail("Expected identifier in nested name.")
-                identifier = self.matched_text
-                # make sure there isn't a keyword
-                if identifier in _keywords:
-                    self.fail("Expected identifier in nested name, "
-                              "got keyword: %s" % identifier)
-                identOrOp = ASTIdentifier(identifier)
             # try greedily to get template arguments,
             # but otherwise a < might be because we are in an expression
             pos = self.pos
@@ -6219,14 +6228,9 @@ class DefinitionParser:
             self.skip_ws()
             parameterPack = self.skip_string('...')
             self.skip_ws()
-            if not self.match(_identifier_re):
+            identifier = self._parse_non_kw_identifier('template introduction_list')
+            if not identifier:
                 self.fail("Expected identifier in template introduction list.")
-            txt_identifier = self.matched_text
-            # make sure there isn't a keyword
-            if txt_identifier in _keywords:
-                self.fail("Expected identifier in template introduction list, "
-                          "got keyword: %s" % txt_identifier)
-            identifier = ASTIdentifier(txt_identifier)
             params.append(ASTTemplateIntroductionParameter(identifier, parameterPack))
 
             self.skip_ws()
