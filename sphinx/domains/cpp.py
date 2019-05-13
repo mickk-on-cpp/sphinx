@@ -3650,14 +3650,47 @@ class ASTEnumerator(ASTBase):
             self.init.describe_signature(signode, 'markType', env, symbol)
 
 
+class ASTDummy(ASTBase):
+    """Not an actual AST element.
+
+    Instead, this serves as a placeholder for e.g. Symbol siblings.
+    """
+
+    def __init__(self, name):
+        # type: (ASTIdentifier) -> None
+        self.name = name
+
+    def get_id(self, version, objectType, symbol):
+        # type: (int, str, Symbol) -> str
+        if version < 3:
+            raise NoOldIdError()
+        return symbol.get_full_nested_name().get_id(version)
+
+    def _stringify(self, transform):
+        # type: (Callable[[Any], str]) -> str
+        raise Exception("Attempting to stringify dummy '%s'" % self.name)
+
+    def describe_signature(self, signode, mode, env, symbol):
+        # type: (addnodes.desc_signature, str, BuildEnvironment, Symbol) -> None
+        raise Exception("Attempting to describe dummy '%s'" % self.name)
+
+
 class ASTDeclaration(ASTBase):
-    def __init__(self, objectType, directiveType, visibility, templatePrefix, declaration):
-        # type: (str, str, str, ASTTemplateDeclarationPrefix, Any) -> None
+    def __init__(self,
+                 objectType,      # str
+                 directiveType,   # str
+                 visibility,      # str
+                 templatePrefix,  # ASTTemplateDeclarationPrefix
+                 declaration,     # Any
+                 siblings=None    # Optional[List[ASTNestedName]]
+                 ):
+        # type: (...) -> None
         self.objectType = objectType
         self.directiveType = directiveType
         self.visibility = visibility
         self.templatePrefix = templatePrefix
         self.declaration = declaration
+        self.siblings = siblings or []
 
         self.symbol = None  # type: Symbol
         # set by CPPObject._add_enumerator_to_parent
@@ -3669,9 +3702,13 @@ class ASTDeclaration(ASTBase):
             templatePrefixClone = self.templatePrefix.clone()
         else:
             templatePrefixClone = None
+        if self.siblings:
+            siblingsClone = [sibling.clone() for sibling in self.siblings]
+        else:
+            siblingsClone = None
         return ASTDeclaration(self.objectType, self.directiveType,
                               self.visibility, templatePrefixClone,
-                              self.declaration.clone())
+                              self.declaration.clone(), siblingsClone)
 
     @property
     def name(self):
@@ -3823,6 +3860,7 @@ class Symbol:
 
     def __init__(self,
                  parent,          # type: Symbol
+                 representative,  # type: Optional[Symbol]
                  identOrOp,       # type: Union[ASTIdentifier, ASTOperator]
                  templateParams,  # type: Any
                  templateArgs,    # type: Any
@@ -3831,6 +3869,7 @@ class Symbol:
                  ):
         # type: (...) -> None
         self.parent = parent
+        self.representative = representative
         self.identOrOp = identOrOp
         self.templateParams = templateParams  # template<templateParams>
         self.templateArgs = templateArgs  # identifier<templateArgs>
@@ -3850,6 +3889,7 @@ class Symbol:
 
         # Do symbol addition after self._children has been initialised.
         self._add_template_and_function_params()
+        self._add_siblings()
 
     def _fill_empty(self, declaration, docname):
         # type: (ASTDeclaration, str) -> None
@@ -3864,6 +3904,7 @@ class Symbol:
         self._assert_invariants()
         # and symbol addition should be done as well
         self._add_template_and_function_params()
+        self._add_siblings()
 
     def _add_template_and_function_params(self):
         # Note: we may be called from _fill_empty, so the symbols we want
@@ -3881,7 +3922,7 @@ class Symbol:
                     decl = None
                 nne = ASTNestedNameElement(p.get_identifier(), None)
                 nn = ASTNestedName([nne], [False], rooted=False)
-                self._add_symbols(nn, [], decl, self.docname)
+                self._add_symbols(nn, None, [], decl, self.docname)
         # add symbols for function parameters, if any
         if self.declaration is not None and self.declaration.function_params is not None:
             for p in self.declaration.function_params:
@@ -3894,7 +3935,16 @@ class Symbol:
                 decl = ASTDeclaration('functionParam', None, None, None, p)
                 assert not nn.rooted
                 assert len(nn.names) == 1
-                self._add_symbols(nn, [], decl, self.docname)
+                self._add_symbols(nn, None, [], decl, self.docname)
+
+    def _add_siblings(self):
+        decl = self.declaration
+        if decl is not None and decl.siblings:
+            for name in decl.siblings:
+                ast = ASTDummy(name)
+                sibling = ASTDeclaration('dummy', None, decl.visibility, decl.templatePrefix,
+                                         ast)
+                self.parent._add_symbols(name, self, [], sibling, self.docname)
 
     def remove(self):
         if self.parent is None:
@@ -3902,6 +3952,7 @@ class Symbol:
         assert self in self.parent._children
         self.parent._children.remove(self)
         self.parent = None
+        self.representative = None
 
     def clear_doc(self, docname):
         # type: (str) -> None
@@ -3933,10 +3984,15 @@ class Symbol:
     def get_lookup_key(self):
         # type: () -> List[Tuple[ASTNestedNameElement, Any]]
         symbols = []
-        s = self
-        while s.parent:
-            symbols.append(s)
-            s = s.parent
+        if self.parent:
+            if self.representative:
+                symbols.append(self.representative)
+            else:
+                symbols.append(self)
+            s = self.parent
+            while s.parent:
+                symbols.append(s)
+                s = s.parent
         symbols.reverse()
         key = []
         for s in symbols:
@@ -4147,8 +4203,8 @@ class Symbol:
         return SymbolLookupResult(symbols, parentSymbol,
                                   identOrOp, templateParams, templateArgs)
 
-    def _add_symbols(self, nestedName, templateDecls, declaration, docname):
-        # type: (ASTNestedName, List[Any], ASTDeclaration, str) -> Symbol
+    def _add_symbols(self, nestedName, representative, templateDecls, declaration, docname):
+        # type: (ASTNestedName, Optional[Symbol], List[Any], ASTDeclaration, str) -> Symbol
         # Used for adding a whole path of symbols, where the last may or may not
         # be an actual declaration.
 
@@ -4166,10 +4222,9 @@ class Symbol:
                 print("      templateParams:", templateParams)
                 print("      identOrOp:     ", identOrOp)
                 print("      templateARgs:  ", templateArgs)
-            return Symbol(parent=parentSymbol, identOrOp=identOrOp,
-                          templateParams=templateParams,
-                          templateArgs=templateArgs, declaration=None,
-                          docname=None)
+            return Symbol(parent=parentSymbol, representative=None,
+                          identOrOp=identOrOp, templateParams=templateParams,
+                          templateArgs=templateArgs, declaration=None, docname=None)
 
         lookupResult = self._symbol_lookup(nestedName, templateDecls,
                                            onMissingQualifiedSymbol,
@@ -4190,6 +4245,7 @@ class Symbol:
                 print("      declaration:   ", declaration)
                 print("      docname:       ", docname)
             symbol = Symbol(parent=lookupResult.parentSymbol,
+                            representative=representative,
                             identOrOp=lookupResult.identOrOp,
                             templateParams=lookupResult.templateParams,
                             templateArgs=lookupResult.templateArgs,
@@ -4234,6 +4290,7 @@ class Symbol:
             if Symbol.debug_lookup:
                 print("      begin: creating candidate symbol")
             symbol = Symbol(parent=lookupResult.parentSymbol,
+                            representative=None,
                             identOrOp=lookupResult.identOrOp,
                             templateParams=lookupResult.templateParams,
                             templateArgs=lookupResult.templateArgs,
@@ -4337,8 +4394,8 @@ class Symbol:
             templateDecls = templatePrefix.templates
         else:
             templateDecls = []
-        return self._add_symbols(nestedName, templateDecls,
-                                 declaration=None, docname=None)
+        return self._add_symbols(nestedName, None, templateDecls, declaration=None,
+                                 docname=None)
 
     def add_declaration(self, declaration, docname):
         # type: (ASTDeclaration, str) -> Symbol
@@ -4349,7 +4406,7 @@ class Symbol:
             templateDecls = declaration.templatePrefix.templates
         else:
             templateDecls = []
-        return self._add_symbols(nestedName, templateDecls, declaration, docname)
+        return self._add_symbols(nestedName, None, templateDecls, declaration, docname)
 
     def find_identifier(self, identOrOp, matchSelf, recurseInAnon):
         # type: (Union[ASTIdentifier, ASTOperator], bool, bool) -> Symbol
@@ -4447,6 +4504,7 @@ class Symbol:
             return None
 
         querySymbol = Symbol(parent=lookupResult.parentSymbol,
+                             representative=None,
                              identOrOp=lookupResult.identOrOp,
                              templateParams=lookupResult.templateParams,
                              templateArgs=lookupResult.templateArgs,
@@ -6327,6 +6385,7 @@ class DefinitionParser:
         visibility = None
         templatePrefix = None
         declaration = None  # type: Any
+        siblings = None
 
         self.skip_ws()
         if self.match(_visibility_re):
@@ -6374,7 +6433,7 @@ class DefinitionParser:
                                                           fullSpecShorthand=False,
                                                           isMember=objectType == 'member')
         return ASTDeclaration(objectType, directiveType, visibility,
-                              templatePrefix, declaration)
+                              templatePrefix, declaration, siblings)
 
     def parse_namespace_object(self):
         # type: () -> ASTNamespace
@@ -6505,9 +6564,8 @@ class CPPObject(ObjectDescription):
             return
         declClone = symbol.declaration.clone()
         declClone.enumeratorScopedSymbol = symbol
-        Symbol(parent=targetSymbol, identOrOp=symbol.identOrOp,
-               templateParams=None, templateArgs=None,
-               declaration=declClone,
+        Symbol(parent=targetSymbol, representative=None, identOrOp=symbol.identOrOp,
+               templateParams=None, templateArgs=None, declaration=declClone,
                docname=self.env.docname)
 
     def add_target_and_index(self, ast, sig, signode):
@@ -7077,7 +7135,7 @@ class CPPDomain(Domain):
         'texpr': CPPExprRole(asCode=False)
     }
     initial_data = {
-        'root_symbol': Symbol(None, None, None, None, None, None),
+        'root_symbol': Symbol(None, None, None, None, None, None, None),
         'names': {}  # full name for indexing -> docname
     }
 

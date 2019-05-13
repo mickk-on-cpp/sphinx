@@ -45,7 +45,7 @@ def check(name, input, idDict, output=None):
         print("Result:   ", res)
         print("Expected: ", output)
         raise DefinitionError("")
-    rootSymbol = Symbol(None, None, None, None, None, None)
+    rootSymbol = Symbol(None, None, None, None, None, None, None)
     symbol = rootSymbol.add_declaration(ast, docname="TestDoc")
     parentNode = addnodes.desc()
     signode = addnodes.desc_signature(input, '')
