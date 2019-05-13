@@ -3251,6 +3251,80 @@ class ASTBracedInitList(ASTBase):
         signode.append(nodes.Text('}'))
 
 
+class ASTBindings(ASTBase):
+    def __init__(self,
+                 declSpecs,     # ASTDeclSpecs
+                 refQuals,      # Optional[str]
+                 first_ident,   # ASTIdentifier
+                 extra_idents,  # List[ASTIdentifier]
+                 initializer    # ASTInitializer
+                 ):
+        # type: (...) -> None
+        self.declSpecs = declSpecs
+        self.refQuals = refQuals
+        self.first_ident = first_ident
+        self.extra_idents = extra_idents
+        self.initializer = initializer
+
+    def _namify(self, ident):
+        # type: (ASTIdentifier) -> ASTNestedName
+        return ASTNestedName([ASTNestedNameElement(ident, None)], [False], rooted=False)
+
+    @property
+    def name(self):
+        # type: () -> ASTNestedName
+        return self._namify(self.first_ident)
+
+    @property
+    def siblings(self):
+        # type: () -> List[ASTNestedName]
+        return list(self._namify(ident) for ident in self.extra_idents)
+
+    def _stringify(self, transform):
+        # type: (Callable[[Any], str]) -> str
+        res = []
+
+        res.append(transform(self.declSpecs))
+        res.append(' ')
+
+        if self.refQuals:
+            res.append(self.refQuals)
+
+        res.append('[')
+        res.append(transform(self.first_ident))
+        res.extend(map(lambda ident: ', ' + transform(ident), self.extra_idents))
+        res.append(']')
+
+        if self.initializer:
+            res.append(transform(self.initializer))
+
+        return ''.join(res)
+
+    def get_id(self, version, objectType, symbol):
+        # type: (int, str, Symbol) -> str
+        if version < 3:
+            raise NoOldIdError()
+        return symbol.get_full_nested_name().get_id(version)
+
+    def describe_signature(self, signode, mode, env, symbol):
+        # type: (addnodes.desc_signature, str, Any, Symbol) -> None
+        self.declSpecs.describe_signature(signode, 'markType', env, symbol)
+        signode += nodes.Text(' ')
+
+        if self.refQuals:
+            signode += nodes.Text(self.refQuals)
+
+        signode += nodes.Text('[')
+        self.first_ident.describe_signature(signode, mode, env, '', '', symbol=symbol)
+        for ident in self.extra_idents:
+            signode += nodes.Text(', ')
+            ident.describe_signature(signode, mode, env, '', '', symbol=symbol)
+        signode += nodes.Text(']')
+
+        if self.initializer:
+            self.initializer.describe_signature(signode, mode, env, symbol)
+
+
 class ASTInitializer(ASTBase):
     def __init__(self, value, hasAssign=True):
         # type: (Any, bool) -> None
@@ -6118,6 +6192,84 @@ class DefinitionParser:
             msg += " or constrianted template paramter."
             raise self._make_multi_error(errs, msg)
 
+    def _parse_bindings(self):
+        # type: () -> Tuple[ASTBindings, List[ASTNestedName]]
+
+        # Structured bindings have a rigid syntax setting them apart from the usual
+        # declarators (by design) and can only appear in select places. E.g. these are
+        # bindings:
+        #
+        #     thread_local auto volatile&& [a, b, c] = init;
+        #     static constexpr auto& [a](init);
+        #
+        # These are not:
+        #
+        #     auto ([a, b]) = init; // parens means this is a 'regular' declarator
+        #     auto [a, b, c] = init, [d, e, f] = more_init;
+        #
+        # This is also not allowed:
+        #
+        #     void f(auto [a, b]);
+        #
+        # Consequently parsing of declarators (e.g. starting at _parse_type_with_init) should
+        # not know about structured bindings.
+
+        declSpecs = self._parse_decl_specs(outer='member')
+        for specs in (declSpecs.leftSpecs, declSpecs.rightSpecs):
+            if specs.storage not in [None, 'static', 'thread_local']:
+                self.fail("invalid storage specifier '%s' for structured bindings"
+                          % specs.storage)
+        if str(declSpecs.trailingTypeSpec) != 'auto':
+            self.fail("expected 'auto' qualifier")
+
+        if self.skip_string('&&'):
+            refQuals = '&&'
+        elif self.skip_string('&'):
+            refQuals = '&'
+        else:
+            refQuals = None
+
+        self.skip_ws()
+        if not self.skip_string_and_ws('['):
+            self.fail("expected '['")
+
+        first_ident = self._parse_non_kw_identifier('structured bindings')
+        if not first_ident:
+            self.fail('missing or invalid structured bindings identifier')
+
+        extra_idents = []
+        while 1:
+            self.skip_ws()
+            if self.skip_string_and_ws(']'):
+                break
+            if not self.skip_string_and_ws(','):
+                self.fail("expected ']' or ','")
+
+            ident = self._parse_non_kw_identifier('structured bindings')
+            if not ident:
+                self.fail('invalid structured bindings identifier')
+            extra_idents.append(ident)
+
+        initializer = self._parse_initializer('member')
+        ast = ASTBindings(declSpecs, refQuals, first_ident, extra_idents, initializer)
+        return ast, ast.siblings
+
+    def _parse_member(self):
+        # type: () -> Tuple[Any, List[ASTNestedName]]
+        pos = self.pos
+        try:
+            return self._parse_bindings()
+        except DefinitionError as eBindings:
+            self.pos = pos
+
+            try:
+                return self._parse_type_with_init(named=True, outer='member'), []
+            except DefinitionError as eMember:
+                raise self._make_multi_error([
+                    (eMember, "If declarator"),
+                    (eBindings, "If structured bindings"),
+                ], "Error when parsing member")
+
     def _parse_type_using(self):
         # type: () -> ASTTypeUsing
         name = self._parse_nested_name()
@@ -6415,7 +6567,7 @@ class DefinitionParser:
         elif objectType == 'concept':
             declaration = self._parse_concept()
         elif objectType == 'member':
-            declaration = self._parse_type_with_init(named=True, outer='member')
+            declaration, siblings = self._parse_member()
         elif objectType == 'function':
             declaration = self._parse_type(named=True, outer='function')
         elif objectType == 'class':

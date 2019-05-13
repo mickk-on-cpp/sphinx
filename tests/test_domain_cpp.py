@@ -755,6 +755,46 @@ def test_attributes():
     check('member', 'int *[[attr]] *i', {1: 'i__iPP', 2: '1i'})
 
 
+def test_structured_bindings():
+    ids = {3: '1a'}
+    expected = 'auto [a, b, c] = 42'
+    check('member', 'auto [a, b, c] = 42', ids)
+    check('member', 'auto[a,b,c]=42', ids, output=expected)
+    check('member', 'auto  [  a  ,  b  ,  c  ]  =  42', ids, output=expected)
+
+    # check appropriateness of qualifiers, not every possible combination
+    check('member', 'const auto [a, b, c] = 42', ids)
+    check('member', 'thread_local auto [a, b, c] = 42', ids)
+    check('member', 'static auto [a, b, c] = 42', ids)
+    check('member', 'constexpr auto [a, b, c] = 42', ids)
+    with pytest.raises(DefinitionError):
+        check('member', 'extern auto [a, b, c] = 42', ids)
+    with pytest.raises(DefinitionError):
+        check('member', 'inline auto [a, b, c] = 42', ids)
+
+    check('member', '[[maybe_unused]] auto [a, b, c] = 42', ids)
+
+    check('member', 'auto &[a, b, c] = 42', ids)
+    check('member', 'auto& [a, b, c] = 42', ids, output='auto &[a, b, c] = 42')
+    check('member', 'auto &&[a, b, c] = 42', ids)
+    check('member', 'auto&& [a, b, c] = 42', ids, output='auto &&[a, b, c] = 42')
+
+    with pytest.raises(DefinitionError):
+        parse('member', 'auto [] = 42')
+    with pytest.raises(DefinitionError):
+        parse('member', 'auto [a,] = 42')
+    with pytest.raises(DefinitionError):
+        parse('member', 'auto [a,,b] = 42')
+    with pytest.raises(DefinitionError):
+        parse('member', 'auto *[a, b, c] = 42')
+    with pytest.raises(DefinitionError):
+        parse('member', 'int [a, b, c] = 42')
+    with pytest.raises(DefinitionError):
+        parse('member', 'decltype(auto) [a, b, c] = 42')
+    with pytest.raises(DefinitionError):
+        parse('member', 'decltype(0 + 0) [a, b, c] = 42')
+
+
 def test_xref_parsing():
     def check(target):
         class Config:

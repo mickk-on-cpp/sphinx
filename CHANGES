@@ -96,6 +96,7 @@ Features added
 * rst domain: Add :rst:dir:`directive:option` directive to describe the option
   for directive
 * #6306: html: Add a label to search form for accessability purposes
+* C++, add parsing of structured bindings
 
 Bugs fixed
 ----------
